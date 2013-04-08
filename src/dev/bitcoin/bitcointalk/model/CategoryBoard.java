@@ -6,7 +6,7 @@ import java.util.List;
 public class CategoryBoard implements HasCategoryBoards {
 
 	public final String boardName;
-	private List<CategoryBoard> childBoards = new ArrayList<CategoryBoard>();
+	public List<CategoryBoard> childBoards = new ArrayList<CategoryBoard>();
 	private List<Topic> firstPageTopics = new ArrayList<Topic>();
 	public final String boardId;
 	

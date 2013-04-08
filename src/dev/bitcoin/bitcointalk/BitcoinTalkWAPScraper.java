@@ -1,6 +1,7 @@
 package dev.bitcoin.bitcointalk;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
@@ -30,6 +31,8 @@ public class BitcoinTalkWAPScraper {
 	private static List<String> boardsDownloaded = new ArrayList<String>();
 	
 	private Source source; 
+	static boolean childBoardDebug = false;
+	static String childBoardDebugString = "";
 	
 	protected Category addCategory(List<Category> categories, Element element) {
 		Category currentCategory;
@@ -40,22 +43,33 @@ public class BitcoinTalkWAPScraper {
 		return currentCategory;
 	}
 
-	protected void addCategoryBoard(Category currentCategory, Element element, boolean download) {
+	protected void addCategoryBoard(Category currentCategory, Element element) {
 		Element boardTitleElement = element.getFirstElement("a");
-		addChildBoard(boardTitleElement, currentCategory, download);
+		addChildBoard(boardTitleElement, currentCategory, true);
 	}
 
-	private void addChildBoard(Element linkElement, HasCategoryBoards parent, boolean downloadContents) {
+	private void addChildBoard(Element linkElement, HasCategoryBoards parent, boolean searchForChildren) {
 		final String title = linkElement.getContent().toString();
 		final Map<String, String> queryMap = getQueryMap(linkElement);
 		String boardId = parseId(queryMap.get("board"));
 		if(boardId != null) {
 			CategoryBoard categoryBoard = new CategoryBoard(title, boardId);
-			if(downloadContents && !boardsDownloaded.contains(boardId)){
+			
+			if(searchForChildren && !boardsDownloaded.contains(boardId)){
 				try {
-					downloadBoardContents(boardId, categoryBoard);
+					getChildBoards(boardId, categoryBoard);
 				} finally {
 					boardsDownloaded.add(boardId);
+					if(childBoardDebug && categoryBoard.childBoards !=null && !categoryBoard.childBoards.isEmpty()) {
+						List<CategoryBoard> childBoards = categoryBoard.childBoards;
+						childBoardDebugString += boardId + ": \n [";
+						for (CategoryBoard categoryBoard2 : childBoards) {
+							childBoardDebugString += "['" + categoryBoard2.boardName + "'," + categoryBoard2.boardId + "],";
+							
+						}
+						childBoardDebugString = childBoardDebugString.substring(0, childBoardDebugString.length() - 1);
+						childBoardDebugString += "],\n";
+					}
 				}
 			}
 			parent.addBoard(categoryBoard);
@@ -79,9 +93,9 @@ public class BitcoinTalkWAPScraper {
 		}
 	}
 
-	protected void addTopic(final List<Topic> topics, Element linkElement) {
+	protected void addTopic(final List<Topic> topics, Element linkElement, String boardId) {
 		try {
-			switch(getLinkType(linkElement)){
+			switch(getLinkType(linkElement, boardId)){
 				case TOPIC: 
 					final String title = linkElement.getContent().toString();
 					final Map<String, String> queryMap = getQueryMap(linkElement);
@@ -95,17 +109,16 @@ public class BitcoinTalkWAPScraper {
 		
 	}
 	
-	private void downloadBoardContents(String boardId, CategoryBoard categoryBoard) {
-		log("Downloading contents of board " + boardId);
+	private void getChildBoards(String boardId, CategoryBoard categoryBoard) {
+		log("Downloading child boards of board " + boardId);
 		final Source source = getSourceOrFail(generateBoardLink(boardId));
 		final List<Element> allLinks = source.getAllElements("a");
 		for (Element linkElement : allLinks) {
-			switch(getLinkType(linkElement)){
-//				case TOPIC: addTopic(linkElement, categoryBoard); break;
+			switch(getLinkType(linkElement, boardId)){
 				case CHILD: 
 					if(currentNesting < maxNesting) {
 						currentNesting++; 
-						addChildBoard(linkElement, categoryBoard, true); 
+						addChildBoard(linkElement, categoryBoard, false); 
 						currentNesting=0; 
 						break;
 					}
@@ -120,7 +133,7 @@ public class BitcoinTalkWAPScraper {
 		return base + "?topic=" + topicId + ";wap2";
 	}
 
-	public List<Category> getCategories(boolean download) {
+	public List<Category> getCategories() {
 		
 		try {
 			init();
@@ -138,16 +151,17 @@ public class BitcoinTalkWAPScraper {
 			if(className.contains("titlebg")) {
 				currentCategory = addCategory(categories, element);
 			} else if(className.contains("windowbg")) {
-				addCategoryBoard(currentCategory, element, download);
+				addCategoryBoard(currentCategory, element);
 			}
 		}			
 		
 		return categories;
 	}
 	
-	private LinkType getLinkType(Element linkElement) {
+	private LinkType getLinkType(Element linkElement, String boardId) {
 		final Map<String, String> queryMap = getQueryMap(linkElement);
-		if(queryMap.containsKey("board"))
+		boolean paginationLink = queryMap.containsKey("board") && queryMap.get("board").startsWith(boardId + ".");
+		if(queryMap.containsKey("board") && !paginationLink)
 			return LinkType.CHILD;
 		else if (queryMap.containsKey("topic")) {
 			return LinkType.TOPIC;
@@ -162,7 +176,7 @@ public class BitcoinTalkWAPScraper {
 	 * @return
 	 */
 	public int getPages(String topicId) {
-		log("Downloading contents of topic " + topicId);
+		log("Downloading pages of topic " + topicId);
 		final Source source = getSourceOrFail(generateTopicLink(topicId));
 		final Element pageLinkContainer = source.getFirstElementByClass("windowbg");
 		final TextExtractor textExtractor = pageLinkContainer.getTextExtractor();
@@ -174,7 +188,7 @@ public class BitcoinTalkWAPScraper {
 	}
 	
 	public List<Post> getPosts(String topicId) {
-		log("Downloading contents of topic " + topicId);
+		log("Downloading posts of topic " + topicId);
 		final List<Post> posts = new ArrayList<Post>();
 		final Source source = getSourceOrFail(generateTopicLink(topicId));
 		final List<Element> allElements = source.getAllElements("p");
@@ -218,7 +232,10 @@ public class BitcoinTalkWAPScraper {
 	protected Source getSourceOrFail(String link) {
 		Source source;
 		try {
-			source = new Source(new URL(link));
+			URL url = new URL(link);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setReadTimeout(60*1000);
+			source = new Source(connection.getInputStream());
 			source.fullSequentialParse();
 		} catch (Exception e) {
 			throw new RuntimeException("Couldn't download contents for " + link, e);
@@ -227,12 +244,17 @@ public class BitcoinTalkWAPScraper {
 	}
 
 	public List<Topic> getTopics(String boardId) {
-		log("Downloading contents of board " + boardId);
+		final int numberOfWAPPages = 4;
+		log("Downloading topics of board " + boardId);
 		final List<Topic> topics = new ArrayList<Topic>();
-		final Source source = getSourceOrFail(generateBoardLink(boardId));
-		final List<Element> allLinks = source.getAllElements("a");
+		final List<Element> allLinks = new ArrayList<Element>();
+		for (int i = 0; i < numberOfWAPPages; i++) {
+			final Source source = getSourceOrFail(generateBoardLink(boardId + "." + i*9));
+			final List<Element> links = source.getAllElements("a");
+			allLinks.addAll(links);
+		}
 		for (Element linkElement : allLinks) {
-			addTopic(topics, linkElement);
+			addTopic(topics, linkElement, boardId);
 		}
 		return topics;
 		
